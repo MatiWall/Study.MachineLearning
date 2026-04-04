@@ -2,12 +2,18 @@ import torch
 import torch.nn as nn
 
 
-block_size = 8
+block_size = 128
+batch_size = 32
 n_embed = 32
 steps = 5000
 nr_batches = 40
 n_embeddings = 32
 learning_rate = 1e-3
+n_blocks = 6
+dropout = 0.2
+
+
+torch.manual_seed(42)
 
 
 class Head(nn.Module):
@@ -17,6 +23,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embeddings, head_size, bias=False)
         self.value = nn.Linear(n_embeddings, head_size, bias=False)
         
+        self.dropout = nn.Dropout(dropout)
         self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
         
     def forward(self, x: torch.Tensor):
@@ -31,7 +38,7 @@ class Head(nn.Module):
         
         weight = nn.functional.softmax(weight, dim=-1)
         
-        
+        x = self.dropout(x)
         v = self.value(x)
         return weight @ v
     
@@ -40,9 +47,14 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         
         self.heads = nn.ModuleList([Head(n_embeddings, head_size, block_size) for _ in range(n_heads)])
+        self.projection = nn.Linear(n_embeddings, n_embeddings)
+        self.dropout = nn.Dropout(dropout)
         
     def forward(self, x: torch.Tensor):
-        return torch.concat([h(x) for h in self.heads], dim=-1)
+        
+        x = torch.concat([h(x) for h in self.heads], dim=-1)
+        x = self.projection(x)
+        return self.dropout(x)
     
 class FeedForward(nn.Module):
     
@@ -50,13 +62,34 @@ class FeedForward(nn.Module):
         super().__init__()
         
         self.network = nn.Sequential(
-            nn.Linear(n_embeddings, n_embeddings),
-            nn.ReLU()
+            nn.Linear(n_embeddings, 4 * n_embeddings),
+            nn.ReLU(),
+            nn.Linear(4 * n_embeddings, n_embeddings), 
+            nn.Dropout(dropout)
         )
         
     def forward(self, x: torch.Tensor):
         return self.network(x)
     
+class Block(nn.Module):
+    
+    def __init__(self, n_embeddings: int, n_heads, head_size: int):
+        super().__init__()
+        
+        self.sa_head = MultiHeadAttention(n_heads=n_heads, head_size=head_size, block_size=block_size, n_embeddings=n_embeddings)
+        self.ff = FeedForward(n_embeddings=n_embeddings)
+        
+        self.layer_norm_1 = nn.LayerNorm(n_embeddings)
+        self.layer_norm_2 = nn.LayerNorm(n_embeddings)
+        
+    def forward(self, x: torch.Tensor):
+        
+        x = x + self.sa_head(self.layer_norm_1(x))
+        x = x + self.ff(self.layer_norm_2(x))
+        
+        return x
+        
+        
         
 
 class BigramLanguageModel(nn.Module):
@@ -66,16 +99,19 @@ class BigramLanguageModel(nn.Module):
         n_embeddings: int, 
         block_size: int,
         n_heads: int,
-        head_size: int
+        head_size: int,
+        n_blocks: int
         ):
         super().__init__()
         
         self.token_embedding_table = nn.Embedding(nr_tokens, n_embeddings)
         self.position_embedding_table = nn.Embedding(block_size, n_embeddings)
         self.lm_head = nn.Linear(n_embeddings, nr_tokens)
-        self.sa_head = MultiHeadAttention(n_heads=n_heads, head_size=head_size, block_size=block_size, n_embeddings=n_embeddings)
-        
-        self.ff = FeedForward(n_embeddings=n_embeddings)
+        self.blocks = nn.Sequential(
+            *[Block(n_embeddings=n_embeddings, n_heads=n_heads, head_size=head_size) for _ in range(n_blocks)],
+
+            nn.LayerNorm(n_embeddings)
+        )
         
     def forward(self, idx ,targets=None):
         
@@ -84,8 +120,7 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.token_embedding_table(idx) # B, T, C
         position_embedding = self.position_embedding_table(torch.arange(T))
         x = token_embeddings + position_embedding
-        x = self.sa_head(x)
-        x = self.ff(x)
+        x = self.blocks(x)
         logits = self.lm_head(x)
     
         
@@ -117,8 +152,8 @@ class BigramLanguageModel(nn.Module):
         return idx
         
 
-def get_batch(data: torch.Tensor, nr_batches: int, block_size: int):
-    batch_idx = torch.randint(0, len(data) - block_size - 1, (nr_batches,))
+def get_batch(data: torch.Tensor, nr_batches: int, block_size: int, batch_size: int):
+    batch_idx = torch.randint(0, len(data) - block_size - 1, (batch_size,))
     
     x = torch.stack([data[b_idx:(b_idx + block_size)] for b_idx in batch_idx])
     y = torch.stack([data[(b_idx + 1):(b_idx + block_size + 1)] for b_idx in batch_idx])
@@ -153,14 +188,17 @@ def main():
         n_embeddings=n_embeddings, 
         block_size=block_size,
         head_size=4,
-        n_heads=8
+        n_heads=8, 
+        n_blocks=n_blocks
         )
+    
+    model = torch.compile(model, backend="inductor")  
 
     # Train    
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     
     for step in range(steps):
-        xb, yb = get_batch(train_data, nr_batches=nr_batches, block_size=block_size)
+        xb, yb = get_batch(train_data, nr_batches=nr_batches, block_size=block_size, batch_size=batch_size)
         
         logits, loss = model(xb, yb)
         
