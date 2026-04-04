@@ -34,15 +34,48 @@ class Head(nn.Module):
         
         v = self.value(x)
         return weight @ v
+    
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads: int, head_size: int, block_size: int, n_embeddings: int):
+        super().__init__()
+        
+        self.heads = nn.ModuleList([Head(n_embeddings, head_size, block_size) for _ in range(n_heads)])
+        
+    def forward(self, x: torch.Tensor):
+        return torch.concat([h(x) for h in self.heads], dim=-1)
+    
+class FeedForward(nn.Module):
+    
+    def __init__(self, n_embeddings: int):
+        super().__init__()
+        
+        self.network = nn.Sequential(
+            nn.Linear(n_embeddings, n_embeddings),
+            nn.ReLU()
+        )
+        
+    def forward(self, x: torch.Tensor):
+        return self.network(x)
+    
+        
 
 class BigramLanguageModel(nn.Module):
-    def __init__(self, nr_tokens: int, n_embeddings: int, block_size: int):
+    def __init__(
+        self, 
+        nr_tokens: int, 
+        n_embeddings: int, 
+        block_size: int,
+        n_heads: int,
+        head_size: int
+        ):
         super().__init__()
         
         self.token_embedding_table = nn.Embedding(nr_tokens, n_embeddings)
         self.position_embedding_table = nn.Embedding(block_size, n_embeddings)
         self.lm_head = nn.Linear(n_embeddings, nr_tokens)
-        self.sa_head = Head(n_embeddings, n_embeddings, block_size)
+        self.sa_head = MultiHeadAttention(n_heads=n_heads, head_size=head_size, block_size=block_size, n_embeddings=n_embeddings)
+        
+        self.ff = FeedForward(n_embeddings=n_embeddings)
         
     def forward(self, idx ,targets=None):
         
@@ -52,6 +85,7 @@ class BigramLanguageModel(nn.Module):
         position_embedding = self.position_embedding_table(torch.arange(T))
         x = token_embeddings + position_embedding
         x = self.sa_head(x)
+        x = self.ff(x)
         logits = self.lm_head(x)
     
         
@@ -114,13 +148,13 @@ def main():
     train_data = data[:fraction]
     val_data = data[fraction:]
     
-    model = BigramLanguageModel(nr_tokens=len(tokens), n_embeddings=n_embeddings, block_size=block_size)
-    
-    
-    idx = torch.zeros((1,1), dtype=torch.long)
-    result = model.generate(idx, max_new_tokens=100)
-    
-    print(decode(result[0].tolist()))
+    model = BigramLanguageModel(
+        nr_tokens=len(tokens), 
+        n_embeddings=n_embeddings, 
+        block_size=block_size,
+        head_size=4,
+        n_heads=8
+        )
 
     # Train    
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -137,7 +171,7 @@ def main():
         print(f"step {step}, loss {loss.item()}")
 
     idx = torch.zeros((1,1), dtype=torch.long)
-    result = model.generate(idx, max_new_tokens=100)
+    result = model.generate(idx, max_new_tokens=1000)
 
     print(decode(result[0].tolist()))
     
