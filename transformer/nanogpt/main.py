@@ -4,12 +4,11 @@ import torch.nn as nn
 
 block_size = 128
 batch_size = 32
-n_embed = 32
 steps = 5000
 nr_batches = 40
 n_embeddings = 32
-learning_rate = 1e-3
-n_blocks = 6
+learning_rate = 3e-4
+n_blocks = 4
 dropout = 0.2
 
 
@@ -192,7 +191,6 @@ def main():
         n_blocks=n_blocks
         )
     
-    model = torch.compile(model, backend="inductor")  
 
     # Train    
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
