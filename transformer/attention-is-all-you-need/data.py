@@ -1,4 +1,5 @@
-from datasets import load_dataset
+import pandas as pd
 
-ds = load_dataset("wikimedia/wikipedia", "20231101.en")
-print(ds)
+data = pd.read_parquet("./data/test-00000-of-00001-010a6231c4b54d31.parquet")
+
+pass
