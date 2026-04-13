@@ -8,9 +8,9 @@ class Head(nn.Module):
     Implementation of the scaled dot product attention from the original paper
     
     """
-    def __init__(self, embedding_dim: int, attention_dim: int):
+    def __init__(self, embedding_dim: int, attention_dim: int, is_masked: bool = True ):
         super().__init__()
-        
+        self.is_masked = is_masked
         # Linear layers to transform the input embeddings into queries, keys and values. 
         # Projects the input embedding into a space of dim attention_dim
         # Does y = xA^T + b
@@ -22,18 +22,18 @@ class Head(nn.Module):
         self.wv = nn.Linear(embedding_dim, attention_dim, bias=False)
         
         
-    def forward(self, embedding: torch.Tensor):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
+        B, T, C = query.shape
         
-        query = self.wq(embedding)
-        keys = self.wk(embedding)
-        values = self.wv(embedding)
+        query = self.wq(query)
+        keys = self.wk(key)
+        values = self.wv(value)
         
         attention_score = query@keys.T /keys.shape[1]**0.5
         
-        
-        upper_triangle = torch.triu(attention_score, diagonal=1).bool()
-        
-        attention_score[upper_triangle] = float("-inf") # Making sure softmax works
+        if self.is_masked: # To avoid forward looking
+            upper_triangle = torch.triu(attention_score, diagonal=1).bool()
+            attention_score[upper_triangle] = float("-inf") # Making sure softmax works
         
         attention_score_softmax = nn.functional.softmax(attention_score, dim=-1) # Column wise softmax
         
@@ -43,16 +43,19 @@ class Head(nn.Module):
     
     
 class MultiHeadAttention(nn.Module):
-    def __init__(self, heads: list[Head], embedding_dim: int, attention_dim: int ):
+    """
+    Doing multiple attentions in parallel. Concat them and use a linear transformation to project to a lower dim.
+    """
+    def __init__(self, heads: list[Head], embedding_dim: int, attention_dim: int):
         super().__init__()
         self.heads = heads
         
         # projection to move from dimension of attention_dim to embedding dim
         self.projection = nn.Linear(in_features=attention_dim * len(heads), out_features=embedding_dim)
         
-    def forward(self, x: torch.Tensor): 
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor): 
         
-        heads_evaluated = torch.concat([h(x) for h in self.heads], dim=-1)
+        heads_evaluated = torch.concat([h(query=query, key=key, value=value) for h in self.heads], dim=-1)
         
         return self.projection(heads_evaluated) 
         
